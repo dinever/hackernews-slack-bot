@@ -18,7 +18,7 @@ import (
 	"google.golang.org/appengine/urlfetch"
 )
 
-// TelegramAPIBase is the API base of telegram API.
+// TelegramAPIBase is the API base of telegram API.  const TelegramAPIBase = `https://api.telegram.org/`
 const TelegramAPIBase = `https://api.telegram.org/`
 
 // BatchSize is the number of top stories to fetch from Hacker News.
@@ -33,7 +33,7 @@ const NumCommentsThreshold = 5
 const ScoreThreshold = 50
 
 // DefaultTimeout is the default URLFetch timeout.
-const DefaultTimeout = 9 * time.Minute
+const DefaultTimeout = 10 * time.Second
 
 // DefaultChatID is the default chat ID.
 const DefaultChatID = `@yahnc`
@@ -42,9 +42,9 @@ func loge(ctx context.Context, err error) {
 	log.Errorf(ctx, "%+v", err)
 }
 
-var editMessageFunc = delay.Func("editMessage", func(ctx context.Context, itemID int64, messageID int64) {
-	log.Infof(ctx, "editing message: id %d, message id %d", itemID, messageID)
-	story := Story{ID: itemID, MessageID: messageID}
+var editMessageFunc = delay.Func("editMessage", func(ctx context.Context, itemID int64, timestamp string) {
+	log.Infof(ctx, "editing message: id %d, message timestamp %s", itemID, timestamp)
+	story := Story{ID: itemID, Timestamp: timestamp}
 	err := story.EditMessage(ctx)
 	if err != nil {
 		if errors.Cause(err) != ErrIgnoredItem {
@@ -59,7 +59,6 @@ var editMessageFunc = delay.Func("editMessage", func(ctx context.Context, itemID
 })
 
 var sendMessageFunc = delay.Func("sendMessage", func(ctx context.Context, itemID int64) {
-	log.Infof(ctx, "sending message: id %d", itemID)
 	story := Story{ID: itemID}
 	err := story.SendMessage(ctx)
 	if err != nil {
@@ -74,9 +73,9 @@ var sendMessageFunc = delay.Func("sendMessage", func(ctx context.Context, itemID
 	}
 })
 
-var deleteMessageFunc = delay.Func("deleteMessage", func(ctx context.Context, itemID int64, messageID int64) {
-	log.Infof(ctx, "deleting message: id %d, message id %d", itemID, messageID)
-	story := Story{ID: itemID, MessageID: messageID}
+var deleteMessageFunc = delay.Func("deleteMessage", func(ctx context.Context, itemID int64) {
+	log.Infof(ctx, "deleting message: id %d, message id %d", itemID)
+	story := Story{ID: itemID}
 	if err := story.DeleteMessage(ctx); err != nil {
 		loge(ctx, err)
 	}
@@ -87,9 +86,17 @@ func init() {
 	http.HandleFunc("/cleanup", cleanUpHandler)
 }
 
-// TelegramAPI is a helper function to get the Telegram API endpoint.
-func TelegramAPI(method string) string {
-	return TelegramAPIBase + os.Getenv("BOT_KEY") + "/" + method
+// WebhookURL is a helper function to get the Slack API Webhook URL.
+func WebhookURL() string {
+	return os.Getenv("WEBHOOK_URL")
+}
+
+func SlackToken() string {
+	return os.Getenv("SLACK_TOKEN")
+}
+
+func ChannelID() string {
+	return os.Getenv("CHANNEL_ID")
 }
 
 // NewsURL is a helper function to get the URL to the story's HackerNews page.
@@ -111,6 +118,28 @@ func GetTopStoryURL() string {
 func GetKey(ctx context.Context, i int64) *datastore.Key {
 	root := datastore.NewKey(ctx, "TopStory", "Root", 0, nil)
 	return datastore.NewKey(ctx, "Story", "", i, root)
+}
+
+func testHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := appengine.NewContext(r)
+	//
+	//client := slack.New("FII88r4iO1SDUCCdXIyP6MuS")
+	//channel, timestamp, err := client.PostMessage("hackernews", "123", slack.PostMessageParameters{})
+	//
+	//if err != nil {
+	//	log.Errorf(ctx, "Failed to send message: %v", err)
+	//}
+	//
+	//log.Infof(ctx, "Message sent, channel: %s, ts: %s", channel, timestamp)
+
+	log.Infof(ctx, "sending test message")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func(id int64) {
+		defer wg.Done()
+		sendMessageFunc.Call(ctx, id)
+	}(17999686)
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -137,15 +166,17 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		log.Infof(ctx, "no unknown news")
 		wg.Add(len(keys))
 		for i, key := range keys {
-			go func(id, messageID int64) {
+			go func(id int64, timestamp string) {
 				defer wg.Done()
-				editMessageFunc.Call(ctx, id, messageID)
-			}(key.IntID(), savedStories[i].MessageID)
+				editMessageFunc.Call(ctx, id, timestamp)
+			}(key.IntID(), savedStories[i].Timestamp)
 		}
 		return
 	}
 
 	multiErr, ok := err.(appengine.MultiError)
+
+	log.Infof(ctx, "%v", ok)
 
 	if !ok {
 		log.Debugf(ctx, "%v", errors.Wrap(err, "in func handler() from datastore.GetMulti()"))
@@ -156,10 +187,10 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case err == nil:
 			wg.Add(1)
-			go func(id, messageID int64) {
+			go func(id int64, timestamp string) {
 				defer wg.Done()
-				editMessageFunc.Call(ctx, id, messageID)
-			}(keys[i].IntID(), savedStories[i].MessageID)
+				editMessageFunc.Call(ctx, id, timestamp)
+			}(keys[i].IntID(), savedStories[i].Timestamp)
 		case err == datastore.ErrNoSuchEntity:
 			wg.Add(1)
 			go func(id int64) {
@@ -209,9 +240,9 @@ func cleanUpHandler(w http.ResponseWriter, r *http.Request) {
 
 	for _, story := range allStories {
 		wg.Add(1)
-		go func(id, messageID int64) {
+		go func(id int64) {
 			defer wg.Done()
-			deleteMessageFunc.Call(ctx, id, messageID)
-		}(story.ID, story.MessageID)
+			deleteMessageFunc.Call(ctx, id)
+		}(story.ID)
 	}
 }

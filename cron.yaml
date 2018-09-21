@@ -3,7 +3,7 @@ cron:
   url: /poll
   target: default
   schedule: every 10 mins
-- description: Delete old stories from channel
+- description: Delete old stories from datastore
   url: /cleanup
   target: default
-  schedule: every 10 mins
+  schedule: every 60 mins

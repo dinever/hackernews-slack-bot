@@ -1,6 +1,3 @@
-# yegle-bots
-Some Telegram bots
+# Hacker News Slack Bot
 
-## Yet-Another Hacker News Channel
-
-- Link to join: <https://t.me/yahnc>
+Forked from [yegle bots](http://github.com/yegle/yegle-bots)

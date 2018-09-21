@@ -1,12 +1,12 @@
 package bots
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -26,7 +26,7 @@ type Story struct {
 	Title               string    `json:"title"`
 	Descendants         int64     `json:"descendants"`
 	Score               int64     `json:"score"`
-	MessageID           int64     `json:"-"`
+	Timestamp           string    `json:"ts"`
 	LastSave            time.Time `json:"-"`
 	Type                string    `json:"type"`
 	missingFieldsLoaded bool
@@ -50,8 +50,8 @@ func (s *Story) Load(ps []datastore.Property) error {
 func (s *Story) Save() ([]datastore.Property, error) {
 	return []datastore.Property{
 		{
-			Name:  "MessageID",
-			Value: s.MessageID,
+			Name:  "Timestamp",
+			Value: s.Timestamp,
 		},
 		{
 			Name:  "ID",
@@ -88,24 +88,36 @@ func (s *Story) ShouldIgnore() bool {
 		s.URL == ""
 }
 
-// ToSendMessageRequest will return a new SendMessageRequest object
-func (s *Story) ToSendMessageRequest() SendMessageRequest {
-	return SendMessageRequest{
-		ChatID:      DefaultChatID,
-		Text:        fmt.Sprintf("<b>%s</b>  %s", s.Title, s.URL),
-		ParseMode:   "HTML",
-		ReplyMarkup: s.GetReplyMarkup(),
+func (s *Story) ToSendMessageAttachments() []SlackMessageAttachments {
+	var (
+		scoreSuffix   string
+		commentSuffix string
+	)
+	if s.Score > 100 {
+		scoreSuffix = " " + Hot
 	}
-}
-
-// ToEditMessageTextRequest will return a new EditMessageTextRequest object
-func (s *Story) ToEditMessageTextRequest() EditMessageTextRequest {
-	return EditMessageTextRequest{
-		ChatID:      DefaultChatID,
-		MessageID:   s.MessageID,
-		Text:        fmt.Sprintf("<b>%s</b>  %s", s.Title, s.URL),
-		ParseMode:   "HTML",
-		ReplyMarkup: s.GetReplyMarkup(),
+	if s.Descendants > 100 {
+		commentSuffix = " " + Hot
+	}
+	return []SlackMessageAttachments{
+		{
+			Fallback:  s.Title,
+			Color:     "#ff6633",
+			Title:     s.Title,
+			TitleLink: s.URL,
+			Fields: []*SlackMessageAttachmentField{
+				{
+					Title: "Score",
+					Value: fmt.Sprintf("%d+%s", s.Score, scoreSuffix),
+					Short: true,
+				},
+				{
+					Title: "Comments",
+					Value: fmt.Sprintf("<%s|%d+%s>", NewsURL(s.ID), s.Descendants, commentSuffix),
+					Short: true,
+				},
+			},
+		},
 	}
 }
 
@@ -134,14 +146,6 @@ func (s *Story) GetReplyMarkup() InlineKeyboardMarkup {
 	}
 }
 
-// ToDeleteMessageRequest returns a DeleteMessageRequest.
-func (s *Story) ToDeleteMessageRequest() DeleteMessageRequest {
-	return DeleteMessageRequest{
-		ChatID:    DefaultChatID,
-		MessageID: s.MessageID,
-	}
-}
-
 // EditMessage send a request to edit a message.
 func (s *Story) EditMessage(ctx context.Context) error {
 	if !s.missingFieldsLoaded {
@@ -153,18 +157,29 @@ func (s *Story) EditMessage(ctx context.Context) error {
 		return errors.WithStack(ErrIgnoredItem)
 	}
 
-	req := s.ToEditMessageTextRequest()
-	jsonBytes, err := json.Marshal(req)
+	attchments := s.ToSendMessageAttachments()
+	jsonBytes, err := json.Marshal(attchments)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
-	resp, err := myHTTPClient(ctx).Post(TelegramAPI("editMessageText"), "application/json", bytes.NewBuffer(jsonBytes))
+	resp, err := myHTTPClient(ctx).PostForm("https://slack.com/api/chat.update",
+		url.Values{
+			"token":        {SlackToken()},
+			"channel":      {ChannelID()},
+			"text":         {fmt.Sprintf("<%s>", strings.Replace(s.URL, "https", "http", 1))},
+			"ts":           {s.Timestamp},
+			"unfurl_links": {"true"},
+			"attachments":  {string(jsonBytes)},
+		},
+	)
 	if err != nil {
+		log.Errorf(ctx, "story %d: %s could not be edit: %#v", s.ID, s.Title, err)
 		return errors.WithStack(err)
 	}
 	defer resp.Body.Close()
-	io.Copy(ioutil.Discard, resp.Body)
+	body, err := ioutil.ReadAll(resp.Body)
+	log.Infof(ctx, "edited story %d: %s: %s", s.ID, s.Title, string(body))
 	return nil
 }
 
@@ -190,60 +205,42 @@ func (s *Story) SendMessage(ctx context.Context) error {
 	} else if s.InDatastore(ctx) {
 		return errors.WithStack(fmt.Errorf("story already posted: %#v", s))
 	}
-	req := s.ToSendMessageRequest()
-	jsonBytes, err := json.Marshal(req)
+	attchments := s.ToSendMessageAttachments()
+	jsonBytes, err := json.Marshal(attchments)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
-	resp, err := myHTTPClient(ctx).Post(TelegramAPI("sendMessage"), "application/json", bytes.NewBuffer(jsonBytes))
+	resp, err := myHTTPClient(ctx).PostForm("https://slack.com/api/chat.postMessage",
+		url.Values{
+			"token":        {SlackToken()},
+			"channel":      {ChannelID()},
+			"attachments":  {string(jsonBytes)},
+			"unfurl_links": {"true"},
+			"text":         {fmt.Sprintf("<%s>", strings.Replace(s.URL, "https", "http", 1))}},
+	)
 	if err != nil {
+		log.Errorf(ctx, "story %d: %s could not be sent: %#v", s.ID, s.Title, err)
 		return errors.WithStack(err)
 	}
 	defer resp.Body.Close()
 
-	var response SendMessageResponse
-
+	var response SlackMessageResponse
 	err = json.NewDecoder(resp.Body).Decode(&response)
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	s.MessageID = response.Result.MessageID
+	s.Timestamp = response.Timestamp
+	log.Infof(ctx, "sent story %d: %s", s.ID, s.Title)
 	return nil
 }
 
-// DeleteMessage delete a message from telegram Channel and from channel.
+// DeleteMessage delete a message from datastore.
 func (s *Story) DeleteMessage(ctx context.Context) error {
-	req := s.ToDeleteMessageRequest()
-	jsonBytes, err := json.Marshal(req)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	resp, err := myHTTPClient(ctx).Post(TelegramAPI("deleteMessage"), "application/json", bytes.NewBuffer(jsonBytes))
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	defer resp.Body.Close()
-
-	var response DeleteMessageResponse
-
-	err = json.NewDecoder(resp.Body).Decode(&response)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	if !response.OK {
-		if !response.ShouldIgnoreError() {
-			return errors.WithStack(fmt.Errorf("%#v", response))
-		}
-		log.Warningf(ctx, "ignoring %#v", response)
-	}
-
 	key := GetKey(ctx, s.ID)
 	if err := datastore.Delete(ctx, key); err != nil {
 		return errors.WithStack(err)
 	}
-	log.Infof(ctx, "%d (messageID: %d) deleted", s.ID, s.MessageID)
+	log.Infof(ctx, "Story %d deleted", s.ID)
 	return nil
 }

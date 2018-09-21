@@ -8,12 +8,28 @@ import (
 // ErrIgnoredItem is returned when the story should be ignored.
 var ErrIgnoredItem = errors.New("item ignored")
 
-// SendMessageRequest is a struct that maps to a sendMessage request.
-type SendMessageRequest struct {
-	ChatID      string               `json:"chat_id"`
-	Text        string               `json:"text"`
-	ParseMode   string               `json:"parse_mode,omitempty"`
-	ReplyMarkup InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+// SlackMessageResponse is a struct that maps to the response returned from slack.com/api/chat.postMessage
+type SlackMessageResponse struct {
+	OK          bool                       `json:"ok"`
+	Channel     string                     `json:"channel"`
+	Timestamp   string                     `json:"ts"`
+	Attachments []*SlackMessageAttachments `json:"attachments"`
+}
+
+// SlackMessageAttachments is a struct that maps to the message attachment
+type SlackMessageAttachments struct {
+	Fallback  string                         `json:"fallback"`
+	Color     string                         `json:"color"`
+	Title     string                         `json:"title"`
+	TitleLink string                         `json:"title_link"`
+	Fields    []*SlackMessageAttachmentField `json:"fields"`
+}
+
+// SlackMessageAttachmentField is a struct that maps to the message attachment field
+type SlackMessageAttachmentField struct {
+	Title string `json:"title"`
+	Value string `json:"value"`
+	Short bool   `json:"short"`
 }
 
 // InlineKeyboardMarkup type.

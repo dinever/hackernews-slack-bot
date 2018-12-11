@@ -1,8 +1,12 @@
 cron:
+- description: Edit the stories on Hacker News
+  url: /edit
+  target: default
+  schedule: every 10 mins
 - description: Check the top stories on Hacker News
   url: /poll
   target: default
-  schedule: every 10 mins
+  schedule: every 1 hours
 - description: Delete old stories from datastore
   url: /cleanup
   target: default

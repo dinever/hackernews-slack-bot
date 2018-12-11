@@ -169,8 +169,8 @@ func (s *Story) EditMessage(ctx context.Context) error {
 			"channel":      {ChannelID()},
 			"text":         {fmt.Sprintf("<%s>", strings.Replace(s.URL, "https", "http", 1))},
 			"ts":           {s.Timestamp},
-			"unfurl_links": {"true"},
 			"attachments":  {string(jsonBytes)},
+			"unfurl_links": {"true"},
 		},
 	)
 	if err != nil {
@@ -211,22 +211,36 @@ func (s *Story) SendMessage(ctx context.Context) error {
 		return errors.WithStack(err)
 	}
 
-	resp, err := myHTTPClient(ctx).PostForm("https://slack.com/api/chat.postMessage",
+	respAttachments, err := myHTTPClient(ctx).PostForm("https://slack.com/api/chat.postMessage",
 		url.Values{
 			"token":        {SlackToken()},
 			"channel":      {ChannelID()},
 			"attachments":  {string(jsonBytes)},
 			"unfurl_links": {"true"},
-			"text":         {fmt.Sprintf("<%s>", strings.Replace(s.URL, "https", "http", 1))}},
+		},
 	)
 	if err != nil {
 		log.Errorf(ctx, "story %d: %s could not be sent: %#v", s.ID, s.Title, err)
 		return errors.WithStack(err)
 	}
-	defer resp.Body.Close()
+	defer respAttachments.Body.Close()
+
+	respText, err := myHTTPClient(ctx).PostForm("https://slack.com/api/chat.postMessage",
+		url.Values{
+			"token":        {SlackToken()},
+			"channel":      {ChannelID()},
+			"text":         {fmt.Sprintf("<%s>", strings.Replace(s.URL, "https", "http", 1))},
+			"unfurl_links": {"true"},
+		},
+	)
+	if err != nil {
+		log.Errorf(ctx, "link %d: %s could not be sent: %#v", s.ID, s.Title, err)
+		return errors.WithStack(err)
+	}
+	defer respText.Body.Close()
 
 	var response SlackMessageResponse
-	err = json.NewDecoder(resp.Body).Decode(&response)
+	err = json.NewDecoder(respAttachments.Body).Decode(&response)
 	if err != nil {
 		return errors.WithStack(err)
 	}

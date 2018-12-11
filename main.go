@@ -82,6 +82,7 @@ var deleteMessageFunc = delay.Func("deleteMessage", func(ctx context.Context, it
 })
 
 func init() {
+	http.HandleFunc("/edit", editHandler)
 	http.HandleFunc("/poll", handler)
 	http.HandleFunc("/cleanup", cleanUpHandler)
 }
@@ -140,6 +141,61 @@ func testHandler(w http.ResponseWriter, r *http.Request) {
 		defer wg.Done()
 		sendMessageFunc.Call(ctx, id)
 	}(17999686)
+}
+
+func editHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := appengine.NewContext(r)
+
+	topStories, err := getTopStories(ctx, BatchSize)
+	if err != nil {
+		loge(ctx, err)
+		return
+	}
+
+	var keys []*datastore.Key
+
+	for _, story := range topStories {
+		keys = append(keys, GetKey(ctx, story))
+	}
+
+	savedStories := make([]Story, BatchSize, BatchSize)
+
+	err = datastore.GetMulti(ctx, keys, savedStories)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	if err == nil {
+		log.Infof(ctx, "no unknown news")
+		wg.Add(len(keys))
+		for i, key := range keys {
+			go func(id int64, timestamp string) {
+				defer wg.Done()
+				editMessageFunc.Call(ctx, id, timestamp)
+			}(key.IntID(), savedStories[i].Timestamp)
+		}
+		return
+	}
+
+	multiErr, ok := err.(appengine.MultiError)
+
+	log.Infof(ctx, "%v", ok)
+
+	if !ok {
+		log.Debugf(ctx, "%v", errors.Wrap(err, "in func handler() from datastore.GetMulti()"))
+		return
+	}
+
+	for i, err := range multiErr {
+		switch {
+		case err == nil:
+			wg.Add(1)
+			go func(id int64, timestamp string) {
+				defer wg.Done()
+				editMessageFunc.Call(ctx, id, timestamp)
+			}(keys[i].IntID(), savedStories[i].Timestamp)
+		default:
+			loge(ctx, err)
+		}
+	}
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {

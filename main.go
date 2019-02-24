@@ -92,10 +92,12 @@ func WebhookURL() string {
 	return os.Getenv("WEBHOOK_URL")
 }
 
+// SlackToken is the Slack Bot User OAuth Access Token
 func SlackToken() string {
 	return os.Getenv("SLACK_TOKEN")
 }
 
+// ChannelID is the ID of the Slack channel like `ABC8D7EFG`
 func ChannelID() string {
 	return os.Getenv("CHANNEL_ID")
 }

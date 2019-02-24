@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/dyatlov/go-opengraph/opengraph"
 	"io/ioutil"
 	"net/url"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/pkg/errors"
 	"google.golang.org/appengine/datastore"
 	"google.golang.org/appengine/log"
+	"google.golang.org/appengine/urlfetch"
 )
 
 // Hot is the sign for a hot story, either because it has high score or it has
@@ -88,7 +90,8 @@ func (s *Story) ShouldIgnore() bool {
 		s.URL == ""
 }
 
-func (s *Story) ToSendMessageAttachments() []SlackMessageAttachments {
+// ToSendMessageAttachments converts the Story into a Slack attachment struct
+func (s *Story) ToSendMessageAttachments(ctx context.Context) []SlackMessageAttachments {
 	var (
 		scoreSuffix   string
 		commentSuffix string
@@ -99,12 +102,48 @@ func (s *Story) ToSendMessageAttachments() []SlackMessageAttachments {
 	if s.Descendants > 100 {
 		commentSuffix = " " + Hot
 	}
+	client := urlfetch.Client(ctx)
+	resp, err := client.Get(s.URL)
+	if err != nil {
+		log.Errorf(ctx, "story %d: %s could not be fetched: %#v", s.ID, s.Title, err.Error())
+	}
+	defer resp.Body.Close()
+	// reads html as a slice of bytes
+	html, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Errorf(ctx, "story %d: could not read from response: %#v", s.ID, err.Error())
+	}
+	og := opengraph.NewOpenGraph()
+	err = og.ProcessHTML(strings.NewReader(string(html)))
+	var (
+		imageURL    string
+		pageContent string
+		siteName    string
+		siteIcon    string
+	)
+	if err != nil {
+		log.Errorf(ctx, "story %d: %s could not be unfurled: %#v", s.ID, s.Title, err.Error())
+	} else {
+		if len(og.Images) > 0 {
+			imageURL = og.Images[0].URL
+		}
+		pageContent = og.Description
+		siteName = og.SiteName
+	}
+	u, err := url.Parse(s.URL)
+	if err != nil {
+		log.Errorf(ctx, "story %d: could not parse URL %s", s.URL)
+	}
+	u.Path = "favicon.ico"
+	siteIcon = u.String()
 	return []SlackMessageAttachments{
 		{
-			Fallback:  s.Title,
-			Color:     "#ff6633",
-			Title:     s.Title,
-			TitleLink: s.URL,
+			Fallback:   s.Title,
+			Color:      "#ff6633",
+			Title:      s.Title,
+			TitleLink:  s.URL,
+			AuthorName: siteName,
+			AuthorIcon: siteIcon,
 			Fields: []*SlackMessageAttachmentField{
 				{
 					Title: "Score",
@@ -117,6 +156,8 @@ func (s *Story) ToSendMessageAttachments() []SlackMessageAttachments {
 					Short: true,
 				},
 			},
+			ThumbURL: imageURL,
+			Text:     pageContent,
 		},
 	}
 }
@@ -157,7 +198,7 @@ func (s *Story) EditMessage(ctx context.Context) error {
 		return errors.WithStack(ErrIgnoredItem)
 	}
 
-	attchments := s.ToSendMessageAttachments()
+	attchments := s.ToSendMessageAttachments(ctx)
 	jsonBytes, err := json.Marshal(attchments)
 	if err != nil {
 		return errors.WithStack(err)
@@ -167,7 +208,6 @@ func (s *Story) EditMessage(ctx context.Context) error {
 		url.Values{
 			"token":        {SlackToken()},
 			"channel":      {ChannelID()},
-			"text":         {fmt.Sprintf("<%s>", strings.Replace(s.URL, "https", "http", 1))},
 			"ts":           {s.Timestamp},
 			"attachments":  {string(jsonBytes)},
 			"unfurl_links": {"true"},
@@ -205,7 +245,7 @@ func (s *Story) SendMessage(ctx context.Context) error {
 	} else if s.InDatastore(ctx) {
 		return errors.WithStack(fmt.Errorf("story already posted: %#v", s))
 	}
-	attchments := s.ToSendMessageAttachments()
+	attchments := s.ToSendMessageAttachments(ctx)
 	jsonBytes, err := json.Marshal(attchments)
 	if err != nil {
 		return errors.WithStack(err)
@@ -224,20 +264,6 @@ func (s *Story) SendMessage(ctx context.Context) error {
 		return errors.WithStack(err)
 	}
 	defer respAttachments.Body.Close()
-
-	respText, err := myHTTPClient(ctx).PostForm("https://slack.com/api/chat.postMessage",
-		url.Values{
-			"token":        {SlackToken()},
-			"channel":      {ChannelID()},
-			"text":         {fmt.Sprintf("<%s>", strings.Replace(s.URL, "https", "http", 1))},
-			"unfurl_links": {"true"},
-		},
-	)
-	if err != nil {
-		log.Errorf(ctx, "link %d: %s could not be sent: %#v", s.ID, s.Title, err)
-		return errors.WithStack(err)
-	}
-	defer respText.Body.Close()
 
 	var response SlackMessageResponse
 	err = json.NewDecoder(respAttachments.Body).Decode(&response)

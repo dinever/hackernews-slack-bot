@@ -18,11 +18,15 @@ type SlackMessageResponse struct {
 
 // SlackMessageAttachments is a struct that maps to the message attachment
 type SlackMessageAttachments struct {
-	Fallback  string                         `json:"fallback"`
-	Color     string                         `json:"color"`
-	Title     string                         `json:"title"`
-	TitleLink string                         `json:"title_link"`
-	Fields    []*SlackMessageAttachmentField `json:"fields"`
+	Fallback   string                         `json:"fallback"`
+	AuthorName string                         `json:"author_name"`
+	AuthorIcon string                         `json:"author_icon"`
+	Color      string                         `json:"color"`
+	Title      string                         `json:"title"`
+	TitleLink  string                         `json:"title_link"`
+	Fields     []*SlackMessageAttachmentField `json:"fields"`
+	ThumbURL   string                         `json:"thumb_url"`
+	Text       string                         `json:"text"`
 }
 
 // SlackMessageAttachmentField is a struct that maps to the message attachment field
